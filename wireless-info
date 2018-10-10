@@ -25,15 +25,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-SCRIPTDATE="2015-09-27 02:34 +0200"
+SCRIPTDATE="2018-10-06 01:16 -0500"
 FILEBASE="wireless-info"
 OUTPUTDIR="$PWD"
 OUTPUTDIRFB="/tmp"
 
-MODMATCHES="(air|ar5|at7|ath[^3]?|b43|bcma|brcm|carl|ipw|iwl|ndis|r(818|8192[eu]|871|92su)|rt[23567]|rtl|ssb|wl|(cfg|mac)80211)"
+MODMATCHES="(air|ar5|at7|ath[^3]?|b43|bcma|brcm|carl|ipw|iwl|ndis|r(818|8192[eu]|871|92su)|8(188|189|192|723|812)[acde][esu]|rt[23567]|rtl|ssb|wl|(cfg|mac)80211)"
 LSMODMATCHES="(wmi|(dell|ideapad)[-_]laptop)"
 IFACEMATCHES="(wlan[0-9]|eth[0-9])"
-DMESGMATCHES="(firmware|[nN]etwork)"
+DMESGMATCHES="(firmware|[nN]etwork|sdio|SDIO)"
 NMPROFMATCHES="\(\[connection\]\|id=\|type=\|permissions=\|autoconnect=\|\[802-11-wireless\]\|\[wifi\]\|ssid=\|bssid=\|mac-address\(-blacklist\)\?=\|mtu=\|\[802-1x\]\|[[:graph:]]*ca-certs\?=\|\[ipv[46]\]\|method=\)"
 
 DMESGEXCL="apparmor|(cfg|mac)80211"
@@ -145,7 +145,7 @@ exec 2>&1
 printf "\n########## wireless info START ##########\n\n"
 REPORTDATE=$(date +"%d %b %Y %H:%M %Z %z")
 SCRIPTDATE=$(date -u -d "$SCRIPTDATE" +"%d %b %Y %H:%M %Z %z")
-LASTBOOTDT=$(last -FRn 1 reboot | sed -n 's/.*system boot[ ]\+\(.\+\) - .*$/\1/p')
+LASTBOOTDT=$(last -FRn 1 reboot | sed -n 's/.*system boot[ ]\+\(.\+\) - .*/\1/p')
 LASTBOOTDT=$(date -d "$LASTBOOTDT" +"%d %b %Y %H:%M %Z %z")
 printf "Report from: %s\n\n" "$REPORTDATE"
 printf "Booted last: %s\n\n" "$LASTBOOTDT"
@@ -191,17 +191,34 @@ fi
 printf "\n##### rfkill ############################\n\n"
 rfkill list all
 
+printf "\n##### secure boot #######################\n\n"
+if [ -x /usr/bin/mokutil ]; then
+    mokutil --sb-state
+else
+    echo "'mokutil' is not installed (package \"mokutil\")."
+fi
+
 printf "\n##### lsmod #############################\n\n"
 LSMOD=$(lsmod | egrep "(^|[[:punct:] ])($MODMATCHES|$LSMODMATCHES)[^[:punct:] ]*([[:punct:] ]|$)")
 echo "$LSMOD"
 
 printf "\n##### interfaces ########################\n\n"
-sed '/^#/d;s/^wpa-psk [[:graph:]]\+/wpa-psk <WPA key removed>/' /etc/network/interfaces
+for IFACESFILE in $(find /etc/network/interfaces{,.d} -type f 2> /dev/null | sort); do
+    IFACESFLCNT=$(sed '/^#/d;s/^wpa-psk [[:graph:]]\+/wpa-psk <WPA key removed>/' $IFACESFILE)
+    if [ -n "$IFACESFLCNT" ]; then
+	printf "[%s]\n%s\n\n" "$IFACESFILE" "$IFACESFLCNT"
+    fi
+done
 
 printf "\n##### ifconfig ##########################\n\n"
-IFCONFIG=$(ifconfig -a)
-sed '/^lo /,/^$/d' <<< "$IFCONFIG"
-IFACESETH=($(sed -n 's/^\([^ ]\+\)[ ]\+Link encap:Ethernet.*/\1/p' <<< "$IFCONFIG"))
+if [ -x /sbin/ifconfig ]; then
+    IFCONFIG=$(ifconfig -a)
+else
+    IFCONFIG=$(ip address show)
+fi
+echo "$IFCONFIG"
+IFCONFIG=$(sed -n '1h; 1!H; ${g;s/\n /\\ /g;p}' <<< "$IFCONFIG")
+IFACESETH=($(sed -n 's/^\([^ ]\+\)[ ]\+Link encap:Ethernet.*/\1/p; s#^[0-9]\+: \([^ :]\+\):.* link/ether.*#\1#p' <<< "$IFCONFIG"))
 if (( ${#IFACESETH[@]} > 0 )); then
     IFETHMATCHES=${IFACESETH[@]}
     IFACEMATCHES="($IFACEMATCHES|(${IFETHMATCHES// /|}))"
@@ -211,9 +228,14 @@ printf "\n##### iwconfig ##########################\n\n"
 iwconfig
 
 printf "\n##### route #############################\n\n"
-route -n
+if [ -x /sbin/route ]; then
+    route -n
+else
+    ip route show
+fi
 
 printf "\n##### resolv.conf #######################\n\n"
+stat -c "[%a %U %N]" /etc/resolv.conf
 grep -v '^#' /etc/resolv.conf
 
 printf "\n##### network managers ##################\n\n"
@@ -244,12 +266,13 @@ fi
 printf "\n##### NetworkManager.state ##############\n\n"
 cat -s /var/lib/NetworkManager/NetworkManager.state
 
-printf "\n##### NetworkManager.conf ###############\n\n"
-grep -v '^#' /etc/NetworkManager/NetworkManager.conf
-if [ -f /etc/NetworkManager/nm-system-settings.conf ]; then
-    printf "\nnm-system-settings.conf (used up to Ubuntu 10.04):\n\n"
-    grep -v '^#' /etc/NetworkManager/nm-system-settings.conf
-fi
+printf "\n##### NetworkManager config #############\n\n"
+for NMCONFFILE in $(find /{etc,usr/lib}/NetworkManager/{NetworkManager.conf,conf.d} -name "*.conf" 2> /dev/null | sort); do
+    NMCONFCNT=$(egrep -v '^(#|$)' $NMCONFFILE)
+    if [ -n "$NMCONFCNT" ]; then
+	printf "[[%s]]\n%s\n\n" "$NMCONFFILE" "$NMCONFCNT"
+    fi
+done
 
 printf "\n##### NetworkManager profiles ###########\n\n"
 if [ -d /etc/NetworkManager/system-connections ]; then
@@ -276,6 +299,14 @@ if [ -d /etc/NetworkManager/system-connections ]; then
 else
     echo "No NetworkManager profiles found."
 fi
+
+printf "\n##### Netplan config ####################\n\n"
+for NPLANFILE in $(find /{lib,etc,run}/netplan -name "*.yaml" 2> /dev/null | sort); do
+    NPLANFLCNT=$(egrep -v '^(#|$)' $NPLANFILE)
+    if [ -n "$NPLANFLCNT" ]; then
+	printf "[%s]\n%s\n\n" "$NPLANFILE" "$NPLANFLCNT"
+    fi
+done
 
 printf "\n##### iw reg get ########################\n\n"
 if [ -x /sbin/iw ]; then
@@ -357,7 +388,7 @@ for PMUTILSFILE in $(find /etc/pm/*.d \( -type f -o -type l \) -regextype posix-
 done
 
 printf "\n##### udev rules ########################\n\n"
-for UDEVRLFILE in /etc/udev/rules.d/*net*.rules; do
+for UDEVRLFILE in $(find /etc/udev/rules.d -name "*net*.rules" | sort); do
     UDEVRULES=$(grep -B1 '^[^#]' $UDEVRLFILE | egrep -v '^(--)?$')
     if [ -n "$UDEVRULES" ]; then
 	printf "[%s]\n%s\n\n" "$UDEVRLFILE" "$UDEVRULES"
@@ -379,8 +410,8 @@ RESULTS=$(cat -s "$OUTPUTDIR/$FILEBASE.txt")$'\n'
 ORIGIFS="$IFS"
 IFS=$'\n'
 
-IFACESIDS=($(sed -n "s/^\([^ ]\+\)[ ]\+.*HWaddr.*/'\1' [IF]/p" <<< "$IFCONFIG"))
-IFACESMACS=($(sed -n 's/^[^ ]\+[ ]\+.*HWaddr \([^ ]\+\)[ ]*/\1/p' <<< "$IFCONFIG"))
+IFACESIDS=($(sed -n "/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/ {/\(00:\)\{5\}00/! {s/^\([^ ]\+\)[ ]\+.*HWaddr.*/'\1'/p; s/^[0-9]\+: \([^ :]\+\):.*/'\1'/p}}" <<< "$IFCONFIG"))
+IFACESMACS=($(sed -n '/\(00:\)\{5\}00/! s#.*\(HWaddr\|link/[^ ]\+\) \(\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}\).*#\2#p' <<< "$IFCONFIG"))
 IFACESIP6S=($(ip6-mac "${IFACESMACS[@]}"))
 
 WLAPSIWLIDS=($(sed -n "/^[ ]*Cell [0-9]\+/,/^[ ]*ESSID:/ {/^[ ]*Cell [0-9]\+/h; /^[ ]*ESSID:/ {H;g;s/^[ ]*Cell 0\?\([0-9]\+\).*ESSID:\"\(.*\)\"$/'\2' [AC\1]/p}}" <<< "$IWLISTSCAN"))
@@ -388,25 +419,29 @@ WLAPSIWLMACS=($(sed -n 's/^[ ]*Cell [0-9]\+.*Address: \([^ ]\+\)/\1/p' <<< "$IWL
 WLAPSIWLIP6S=($(ip6-mac "${WLAPSIWLMACS[@]}"))
 
 WLAPSNMRAW=$(sed -n '/^##### NetworkManager info #####/,/^##### / {/^[ ]*Wireless Access Points/,/^$/ {/Wireless Access Points/d;s/^[ ]\+\*\?//;s/:[ ]\+/\t/;p}; /^SSID[ ]\+BSSID[ ]\+/,/^$/ {/^SSID[ ]\{2,\}BSSID[ ]\{2,\}/d;s/[ ]\{2,\}/\t/;p}}' <<< "$RESULTS")
-WLAPSNMIDS=($(awk -F '\t' '{printf "'\''%s'\'' [AN%d]\n", $1, NR}' <<< "$WLAPSNMRAW"))
+WLAPSNMIDS=($(awk -F '\t' '{print "'\''" $1 "'\''"}' <<< "$WLAPSNMRAW"))
 WLAPSNMMACS=($(grep -o '\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}' <<< "$WLAPSNMRAW"))
 WLAPSNMIP6S=($(ip6-mac "${WLAPSNMMACS[@]}"))
 
 IFS="$ORIGIFS"
 
 for IFACENR in "${!IFACESMACS[@]}"; do
-    MACMASKSED+="s;${IFACESMACS[$IFACENR]};<MAC ${IFACESIDS[$IFACENR]-address}>;I;"
-    MACMASKSED+=" /${IFACESIP6S[$IFACENR]}/ s;${IFACESIP6S[$IFACENR]/#\\(::/\(};<IP6 ${IFACESIDS[$IFACENR]-from MAC}>;I;"
+    MACMASKSED+="s;${IFACESMACS[$IFACENR]};<MAC ${IFACESIDS[$IFACENR]} [IF$(($IFACENR + 1))]>;I;"
+    MACMASKSED+=" /${IFACESIP6S[$IFACENR]}/ s;${IFACESIP6S[$IFACENR]/#\\(::/\(};<IP6 ${IFACESIDS[$IFACENR]} [IF$(($IFACENR + 1))]>;I;"
+    IFACEMACC=${IFACESMACS[$IFACENR]//:/}
+    if [[ ${IFACESIDS[$IFACENR],,} =~ ${IFACEMACC,,} ]]; then
+	MACMASKSED+="s;\(${IFACESIDS[$IFACENR]:1:3}\)$IFACEMACC;\1<IF from MAC [IF$(($IFACENR + 1))]>;Ig;"
+    fi
 done
 
 for WLAPIWLNR in "${!WLAPSIWLMACS[@]}"; do
-    MACMASKSED+="s;${WLAPSIWLMACS[$WLAPIWLNR]};<MAC ${WLAPSIWLIDS[$WLAPIWLNR]-address}>;I;"
-    MACMASKSED+=" /${WLAPSIWLIP6S[$WLAPIWLNR]}/ s;${WLAPSIWLIP6S[$WLAPIWLNR]/#\\(::/\(};<IP6 ${WLAPSIWLIDS[$WLAPIWLNR]-from MAC}>;I;"
+    MACMASKSED+="s;${WLAPSIWLMACS[$WLAPIWLNR]};<MAC ${WLAPSIWLIDS[$WLAPIWLNR]}>;I;"
+    MACMASKSED+=" /${WLAPSIWLIP6S[$WLAPIWLNR]}/ s;${WLAPSIWLIP6S[$WLAPIWLNR]/#\\(::/\(};<IP6 ${WLAPSIWLIDS[$WLAPIWLNR]}>;I;"
 done
 
 for WLAPNMNR in "${!WLAPSNMMACS[@]}"; do
-    MACMASKSED+="s;${WLAPSNMMACS[$WLAPNMNR]};<MAC ${WLAPSNMIDS[$WLAPNMNR]-address}>;I;"
-    MACMASKSED+=" /${WLAPSNMIP6S[$WLAPNMNR]}/ s;${WLAPSNMIP6S[$WLAPNMNR]/#\\(::/\(};<IP6 ${WLAPSNMIDS[$WLAPNMNR]-from MAC}>;I;"
+    MACMASKSED+="s;${WLAPSNMMACS[$WLAPNMNR]};<MAC ${WLAPSNMIDS[$WLAPNMNR]} [AN$(($WLAPNMNR + 1))]>;I;"
+    MACMASKSED+=" /${WLAPSNMIP6S[$WLAPNMNR]}/ s;${WLAPSNMIP6S[$WLAPNMNR]/#\\(::/\(};<IP6 ${WLAPSNMIDS[$WLAPNMNR]} [AN$(($WLAPNMNR + 1))]>;I;"
 done
 
 sed "$MACMASKSED /\([[:alnum:]]\{2\}:\)\{6,\}/! s/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/<MAC address>/" <<< "$RESULTS" > "$OUTPUTDIR/$FILEBASE.txt"
