@@ -25,19 +25,19 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-SCRIPTDATE="2018-10-06 01:16 -0500"
+SCRIPTDATE="2024-8-27 3:55 -0700"
 FILEBASE="wireless-info"
 OUTPUTDIR="$PWD"
 OUTPUTDIRFB="/tmp"
 
-MODMATCHES="(air|ar5|at7|ath[^3]?|b43|bcma|brcm|carl|ipw|iwl|ndis|r(818|8192[eu]|871|92su)|8(188|189|192|723|812)[acde][esu]|rt[23567]|rtl|ssb|wl|(cfg|mac)80211)"
+MODMATCHES="(air|ar5|at7|ath[^3]?|b43|bcma|brcm|carl|ipw|iwl|ndis|r(818|8192[eu]|871|92su)|8(188|189|192|723|812)[acde][esu]|rt[23567]|rtl|ssb|wl|rtw8|(cfg|mac)80211)"
 LSMODMATCHES="(wmi|(dell|ideapad)[-_]laptop)"
 IFACEMATCHES="(wlan[0-9]|eth[0-9])"
 DMESGMATCHES="(firmware|[nN]etwork|sdio|SDIO)"
 NMPROFMATCHES="\(\[connection\]\|id=\|type=\|permissions=\|autoconnect=\|\[802-11-wireless\]\|\[wifi\]\|ssid=\|bssid=\|mac-address\(-blacklist\)\?=\|mtu=\|\[802-1x\]\|[[:graph:]]*ca-certs\?=\|\[ipv[46]\]\|method=\)"
 
 DMESGEXCL="apparmor|(cfg|mac)80211"
-MODINFOEXCL="alias"
+MODINFOINCL="filename|license|description|depends|retpoline|intree|name|vermagic|parm"
 MODPROBEXCL="(alsa-base|blacklist-(firewire|framebuffer|modem|oss|watchdog)|fglrx|nvidia|fbdev|bumblebee)"
 PMUTILSEXCL="/etc/pm/(power.d/(95hdparm-apm|intel-audio-powersave|sata_alpm)|sleep.d/(10_grub-common|10_unattended-upgrades.*|novatel_3g.*))"
 
@@ -176,7 +176,7 @@ else
 fi
 
 printf "\n##### lspci #############################\n\n"
-lspci -nnk | grep -iA 2 '^[^[:space:]].*net' | sed '/^--$/d; /^[^[:space:]]/ i\\'
+lspci -nnk | grep -iA 3 '^[^[:space:]].*net' | sed '/^--$/d; /^[^[:space:]]/ i\\'
 
 printf "\n##### lsusb #############################\n\n"
 lsusb
@@ -193,7 +193,7 @@ rfkill list all
 
 printf "\n##### secure boot #######################\n\n"
 if [ -x /usr/bin/mokutil ]; then
-    mokutil --sb-state
+    mokutil --sb
 else
     echo "'mokutil' is not installed (package \"mokutil\")."
 fi
@@ -201,6 +201,9 @@ fi
 printf "\n##### lsmod #############################\n\n"
 LSMOD=$(lsmod | egrep "(^|[[:punct:] ])($MODMATCHES|$LSMODMATCHES)[^[:punct:] ]*([[:punct:] ]|$)")
 echo "$LSMOD"
+
+printf "\n##### dkms #############################\n\n"
+dkms status
 
 printf "\n##### interfaces ########################\n\n"
 for IFACESFILE in $(find /etc/network/interfaces{,.d} -type f 2> /dev/null | sort); do
@@ -211,14 +214,16 @@ for IFACESFILE in $(find /etc/network/interfaces{,.d} -type f 2> /dev/null | sor
 done
 
 printf "\n##### ifconfig ##########################\n\n"
-if [ -x /sbin/ifconfig ]; then
+if [ -x /bin/ip ]; then
+    IFCONFIG=$(ip address show)
+elif [ -x /sbin/ifconfig ]; then
     IFCONFIG=$(ifconfig -a)
 else
-    IFCONFIG=$(ip address show)
+    echo "'ip' is not installed (package \"iproute2\")."
 fi
 echo "$IFCONFIG"
 IFCONFIG=$(sed -n '1h; 1!H; ${g;s/\n /\\ /g;p}' <<< "$IFCONFIG")
-IFACESETH=($(sed -n 's/^\([^ ]\+\)[ ]\+Link encap:Ethernet.*/\1/p; s#^[0-9]\+: \([^ :]\+\):.* link/ether.*#\1#p' <<< "$IFCONFIG"))
+IFACESETH=($(sed -n 's#^[0-9]\+: \([^ :]\+\):.* link/ether.*#\1#p; s/^\([^ :]\+\):\?.* \(Link encap:Ethernet\|ether\).*/\1/p' <<< "$IFCONFIG"))
 if (( ${#IFACESETH[@]} > 0 )); then
     IFETHMATCHES=${IFACESETH[@]}
     IFACEMATCHES="($IFACEMATCHES|(${IFETHMATCHES// /|}))"
@@ -228,10 +233,12 @@ printf "\n##### iwconfig ##########################\n\n"
 iwconfig
 
 printf "\n##### route #############################\n\n"
-if [ -x /sbin/route ]; then
+if [ -x /bin/ip ]; then
+    ip route show
+elif [ -x /sbin/route ]; then
     route -n
 else
-    ip route show
+    echo "'ip' is not installed (package \"iproute2\")."
 fi
 
 printf "\n##### resolv.conf #######################\n\n"
@@ -264,7 +271,7 @@ else
 fi
 
 printf "\n##### NetworkManager.state ##############\n\n"
-cat -s /var/lib/NetworkManager/NetworkManager.state
+"$SUDO" cat -s /var/lib/NetworkManager/NetworkManager.state
 
 printf "\n##### NetworkManager config #############\n\n"
 for NMCONFFILE in $(find /{etc,usr/lib}/NetworkManager/{NetworkManager.conf,conf.d} -name "*.conf" 2> /dev/null | sort); do
@@ -304,7 +311,7 @@ printf "\n##### Netplan config ####################\n\n"
 for NPLANFILE in $(find /{lib,etc,run}/netplan -name "*.yaml" 2> /dev/null | sort); do
     NPLANFLCNT=$(egrep -v '^(#|$)' $NPLANFILE)
     if [ -n "$NPLANFLCNT" ]; then
-	printf "[%s]\n%s\n\n" "$NPLANFILE" "$NPLANFLCNT"
+	printf "[%s]\n%s\n\n" "$NPLANFILE" "$NPLANFLCNT"| egrep -v "password|mac|MAC"
     fi
 done
 
@@ -352,7 +359,7 @@ fi
 printf "\n##### module infos ######################\n\n"
 MODULES=$(egrep -o "^$MODMATCHES[^ ]*" <<< "$LSMOD")
 for MODULE in $MODULES; do
-    MODINFO=$(modinfo $MODULE | egrep -v "^$MODINFOEXCL:")
+    MODINFO=$(modinfo $MODULE | egrep -i "^$MODINFOINCL:")
     printf "[%s]\n%s\n\n" "$MODULE" "$MODINFO"
 done
 
@@ -396,7 +403,7 @@ for UDEVRLFILE in $(find /etc/udev/rules.d -name "*net*.rules" | sort); do
 done
 
 printf "\n##### dmesg #############################\n\n"
-dmesg | tail -n 100 | egrep "[[:punct:] ]($MODMATCHES|$IFACEMATCHES|$DMESGMATCHES)[^[:punct:] ]*[[:punct:] ]" | egrep -v "$DMESGEXCL" | uniq -cf 2 | sed 's/^[ ]\+1[ ]\+//;s/^[ ]\+\([0-9]\+\)[ ]\+\(.\+\)$/\2 (repeated \1 times)/'
+"$SUDO" dmesg | tail -n 100 | egrep "[[:punct:] ]($MODMATCHES|$IFACEMATCHES|$DMESGMATCHES)[^[:punct:] ]*[[:punct:] ]" | egrep -v "$DMESGEXCL" | uniq -cf 2 | sed 's/^[ ]\+1[ ]\+//;s/^[ ]\+\([0-9]\+\)[ ]\+\(.\+\)$/\2 (repeated \1 times)/'
 
 printf "\n########## wireless info END ############\n\n"
 
@@ -410,8 +417,8 @@ RESULTS=$(cat -s "$OUTPUTDIR/$FILEBASE.txt")$'\n'
 ORIGIFS="$IFS"
 IFS=$'\n'
 
-IFACESIDS=($(sed -n "/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/ {/\(00:\)\{5\}00/! {s/^\([^ ]\+\)[ ]\+.*HWaddr.*/'\1'/p; s/^[0-9]\+: \([^ :]\+\):.*/'\1'/p}}" <<< "$IFCONFIG"))
-IFACESMACS=($(sed -n '/\(00:\)\{5\}00/! s#.*\(HWaddr\|link/[^ ]\+\) \(\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}\).*#\2#p' <<< "$IFCONFIG"))
+IFACESIDS=($(sed -n "/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/ {/\(00:\)\{5\}00/! {s/^[0-9]\+: \([^ :]\+\):.*/'\1'/p; s/^\([^ :]\+\):\? .*/'\1'/p}}" <<< "$IFCONFIG"))
+IFACESMACS=($(sed -n '/\(00:\)\{5\}00/! s#.*\(HWaddr\|link/[^ ]\+\|ether\) \(\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}\).*#\2#p' <<< "$IFCONFIG"))
 IFACESIP6S=($(ip6-mac "${IFACESMACS[@]}"))
 
 WLAPSIWLIDS=($(sed -n "/^[ ]*Cell [0-9]\+/,/^[ ]*ESSID:/ {/^[ ]*Cell [0-9]\+/h; /^[ ]*ESSID:/ {H;g;s/^[ ]*Cell 0\?\([0-9]\+\).*ESSID:\"\(.*\)\"$/'\2' [AC\1]/p}}" <<< "$IWLISTSCAN"))
@@ -444,7 +451,7 @@ for WLAPNMNR in "${!WLAPSNMMACS[@]}"; do
     MACMASKSED+=" /${WLAPSNMIP6S[$WLAPNMNR]}/ s;${WLAPSNMIP6S[$WLAPNMNR]/#\\(::/\(};<IP6 ${WLAPSNMIDS[$WLAPNMNR]} [AN$(($WLAPNMNR + 1))]>;I;"
 done
 
-sed "$MACMASKSED /\([[:alnum:]]\{2\}:\)\{6,\}/! s/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/<MAC address>/" <<< "$RESULTS" > "$OUTPUTDIR/$FILEBASE.txt"
+sed "$MACMASKSED /\([[:alnum:]]\{2\}:\)\{6,\}/! s/\([[:alnum:]]\{2\}:\)\{5\}[[:alnum:]]\{2\}/<MAC address>/g" <<< "$RESULTS" > "$OUTPUTDIR/$FILEBASE.txt"
 
 ##### The End #####
 
@@ -456,10 +463,10 @@ if (( $(stat -c %s "$OUTPUTDIR/$FILEBASE.txt") > 19968 )); then
 	dialog_error "Results exceed the 19.5 kB size limit for \".txt\" attachments${DIALOGBREAK}on the Ubuntu Forums, but archive could not be created.${TERMOUT+\n}"
 fi
 
-if [ -x /usr/bin/pastebinit ] && ping -nc 3 -w 6 -i 0.2 paste.ubuntu.com > /dev/null 2>&1; then
+if [ -x /usr/bin/pastebinit ]; then
     PASTEBIN=$(dialog_question "Do you also want to post them${DIALOGBREAK}to your default 'pastebinit' provider?")
     if [[ ! $PASTEBIN =~ ^no?$ ]]; then
-	PASTERESULT=$(pastebinit -i "$OUTPUTDIR/$FILEBASE.txt" -f text 2>&1) && PASTESUCCESS="yes"
+		PASTERESULT=$(pastebinit -i "$OUTPUTDIR/$FILEBASE.txt" -f text 2>&1) && PASTESUCCESS="yes"
 	if [ "$PASTESUCCESS" = "yes" ]; then
 	    dialog_info "${TERMOUT+\n}Pastebin successful:\n\n${PASTERESULT}${TERMOUT+\n}"
 	else
